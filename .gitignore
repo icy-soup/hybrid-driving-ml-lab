@@ -1,0 +1,22 @@
+# Python caches and local test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Generated experiment artifacts; keep the directory layout only
+experiments/data/*
+!experiments/data/.gitkeep
+experiments/models/*
+!experiments/models/.gitkeep
+experiments/results/*
+!experiments/results/.gitkeep
+experiments/logs/*
+!experiments/logs/.gitkeep
+
+# Local editor and OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
