@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import random
+import os
 import numpy as np
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import torch
 from torch import nn
+
+# Keep the optional RL stack from oversubscribing the same MKL runtime used by
+# the NumPy behavior-cloning baseline when pytest imports both stacks.
+torch.set_num_threads(1)
 
 from .replay import ReplayBuffer
 
