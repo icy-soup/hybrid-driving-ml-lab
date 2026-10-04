@@ -20,6 +20,19 @@ class ActionType(IntEnum):
     CRUISE = 4
 
 
+class BehaviorMode(IntEnum):
+    """Explainable traffic behavior states used by perception and drivers."""
+
+    CRUISE = 0
+    FOLLOW = 1
+    BRAKE = 2
+    PREPARE_LANE_CHANGE = 3
+    LANE_CHANGE = 4
+    LANE_CHANGE_ABORT = 5
+    EMERGENCY_BRAKE = 6
+    CRASHED = 7
+
+
 @dataclass(frozen=True)
 class Action:
     """A single high-level decision returned by a policy."""
@@ -40,6 +53,13 @@ class VehicleState:
     x: float
     speed: float
     crashed: bool = False
+    y: float | None = None
+    target_lane: int | None = None
+    desired_speed: float | None = None
+    acceleration: float = 0.0
+    length: float = 10.0
+    width: float = 4.0
+    mode: BehaviorMode = BehaviorMode.CRUISE
 
 
 @dataclass(frozen=True)
