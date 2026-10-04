@@ -52,14 +52,22 @@ class TrafficDriver:
         if front.vehicle_id is None:
             return TrafficDecision(desired, lane, BehaviorMode.CRUISE, "clear_lane")
 
-        safe_gap = max(12.0, speed * self.profile.headway)
-        if front.ttc < 1.5 or front.gap < max(8.0, safe_gap * 0.55):
+        # Keep a geometry-aware minimum gap in addition to time headway. This
+        # makes the behavior state change before the integrator has to clamp
+        # an already-too-close vehicle after the fact.
+        safe_gap = max(72.0, 12.0, speed * self.profile.headway)
+        emergency_gap = max(8.0, speed * self.profile.headway * 0.55)
+        if front.ttc < 1.5 or front.gap < emergency_gap:
             return TrafficDecision(max(0.0, front.gap / max(self.profile.headway, 0.5)), lane, BehaviorMode.EMERGENCY_BRAKE, "low_ttc")
         if front.gap < self.profile.lane_change_threshold:
             candidate = self._safe_lane_change(lane, perception)
             if candidate is not None:
                 return TrafficDecision(desired, candidate, BehaviorMode.PREPARE_LANE_CHANGE, "slow_front_clear_adjacent")
-        if front.gap < safe_gap:
+        if front.relative_speed > 0.0 and front.gap < 160.0:
+            front_speed = max(0.0, speed - front.relative_speed)
+            target_speed = min(desired, front_speed + max(0.0, front.gap - safe_gap) * 0.05)
+            return TrafficDecision(target_speed, lane, BehaviorMode.FOLLOW, "closing_on_front_vehicle")
+        if front.gap <= safe_gap:
             target_speed = min(desired, max(0.0, front.gap / max(self.profile.headway, 0.5)), speed)
             return TrafficDecision(target_speed, lane, BehaviorMode.FOLLOW, "maintain_headway")
         return TrafficDecision(min(desired, speed + self.profile.max_acceleration * max(time_step, 0.0)), lane, BehaviorMode.CRUISE, "recover_speed")
@@ -91,27 +99,44 @@ class TrafficWorld:
         ego: VehicleState,
         scenario: object | None = None,
         time_step: float = 0.1,
+        relative_to_ego: bool = False,
     ) -> TrafficStepResult:
         geometries = [self._geometry(vehicle) for vehicle in vehicles]
         ego_geometry = self._geometry(ego)
         updated: list[VehicleState] = []
         decisions: dict[str, TrafficDecision] = {}
         for vehicle, geometry in zip(vehicles, geometries):
+            if vehicle.crashed:
+                crashed_x = vehicle.x - ego.speed * time_step if relative_to_ego else vehicle.x
+                updated.append(replace(vehicle, x=crashed_x, speed=0.0, desired_speed=0.0, acceleration=0.0, mode=BehaviorMode.CRASHED))
+                decisions[vehicle.vehicle_id] = TrafficDecision(0.0, vehicle.lane, BehaviorMode.CRASHED, "vehicle_already_crashed")
+                continue
             snapshot = perceive(geometry, [ego_geometry, *[item for item in geometries if item.vehicle_id != geometry.vehicle_id]], self.config)
             driver = self._drivers.get(vehicle.vehicle_id, TrafficDriver())
             decision = driver.decide(vehicle, snapshot, time_step)
+            if relative_to_ego and decision.behavior_mode is BehaviorMode.CRUISE:
+                # Preserve the environment's historical relative-speed frame:
+                # a clear traffic vehicle cruises at its current speed; only
+                # a detected interaction changes its speed.
+                decision = TrafficDecision(vehicle.speed, decision.target_lane, decision.behavior_mode, decision.reason)
             decisions[vehicle.vehicle_id] = decision
             acceleration = max(-driver.profile.comfortable_deceleration, min(driver.profile.max_acceleration, (decision.target_speed - vehicle.speed) / max(time_step, 1e-6)))
             speed = max(0.0, vehicle.speed + acceleration * time_step)
-            x = vehicle.x + speed * time_step
+            if relative_to_ego:
+                # HighwayEnv stores traffic x in the ego-relative frame.
+                x = vehicle.x - (ego.speed - speed) * time_step
+            else:
+                x = vehicle.x + speed * time_step
             y = decision.target_lane * self.config.lane_width
-            updated.append(replace(vehicle, x=x, y=y, target_lane=decision.target_lane, desired_speed=decision.target_speed, acceleration=acceleration, mode=decision.behavior_mode))
+            updated.append(replace(vehicle, x=x, y=y, speed=speed, target_lane=decision.target_lane, desired_speed=decision.target_speed, acceleration=acceleration, mode=decision.behavior_mode))
         updated.sort(key=lambda item: (item.lane, -item.x))
         # Resolve same-lane penetration deterministically after integration.
         for index in range(1, len(updated)):
             lead, follower = updated[index - 1], updated[index]
             if lead.lane == follower.lane:
-                minimum = (lead.length + follower.length) / 2.0 + self.config.traffic_min_gap
+                minimum = self.config.traffic_min_gap
+                if not relative_to_ego:
+                    minimum += (lead.length + follower.length) / 2.0
                 if lead.x - follower.x < minimum:
                     updated[index] = replace(follower, x=lead.x - minimum, speed=min(follower.speed, lead.speed))
         return TrafficStepResult(tuple(updated), decisions)

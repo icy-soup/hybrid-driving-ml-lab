@@ -11,6 +11,7 @@ from .config import EnvironmentConfig
 from .events import EpisodeDiagnostics, classify_collision
 from .physics import time_to_collision
 from .perception import VehicleGeometry
+from .traffic import TrafficWorld
 from .rewards import EpisodeEvents, compute_reward
 from .scenarios import ScenarioSampler
 from .types import Action, ActionType, Observation, Transition, VehicleState
@@ -30,6 +31,7 @@ class HighwayEnv:
         self.distance_travelled = 0.0
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles: list[VehicleState] = []
+        self.traffic_world = TrafficWorld(self.config)
         self.episode_events = EpisodeEvents()
         self.diagnostics = EpisodeDiagnostics(self.scenario)
         self._previous_vehicle_x: dict[str, float] = {}
@@ -47,6 +49,7 @@ class HighwayEnv:
         self.distance_travelled = 0.0
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles = self._make_scenario(scenario)
+        self.traffic_world = TrafficWorld(self.config)
         self.episode_events = EpisodeEvents()
         self.diagnostics = EpisodeDiagnostics(scenario, seed)
         self._previous_vehicle_x = {vehicle.vehicle_id: vehicle.x for vehicle in self.vehicles}
@@ -167,7 +170,7 @@ class HighwayEnv:
             if (
                 previous_x is not None
                 and previous_x > 0.0
-                and vehicle.x <= 0.0
+                and vehicle.x <= 5.0
                 and vehicle.vehicle_id not in self._overtaken_vehicle_ids
             ):
                 self._overtaken_vehicle_ids.add(vehicle.vehicle_id)
@@ -205,20 +208,32 @@ class HighwayEnv:
         return VehicleState(self.ego.vehicle_id, self.ego.lane, self.ego.x, speed, self.ego.crashed)
 
     def _advance_traffic(self) -> None:
-        updated: list[VehicleState] = []
-        for vehicle in self.vehicles:
-            speed = vehicle.speed
-            if self.scenario == "sudden_brake" and vehicle.vehicle_id == "lead" and self.step_count >= 3:
-                speed = max(self.config.min_forward_speed / 2.0, speed - 2.0)
-            updated.append(
+        result = self.traffic_world.step_traffic(
+            self.vehicles,
+            self.ego,
+            scenario=self.scenario,
+            time_step=1.0,
+            relative_to_ego=True,
+        )
+        updated = list(result.vehicles)
+        if self.scenario == "sudden_brake" and self.step_count >= 3:
+            updated = [
                 VehicleState(
                     vehicle.vehicle_id,
                     vehicle.lane,
-                    vehicle.x - (self.ego.speed - speed),
-                    speed,
+                    vehicle.x,
+                    max(self.config.min_forward_speed / 2.0, vehicle.speed - 2.0) if vehicle.vehicle_id == "lead" else vehicle.speed,
                     vehicle.crashed,
+                    vehicle.y,
+                    vehicle.target_lane,
+                    vehicle.desired_speed,
+                    vehicle.acceleration,
+                    vehicle.length,
+                    vehicle.width,
+                    vehicle.mode,
                 )
-            )
+                for vehicle in updated
+            ]
         updated = self._resolve_traffic_spacing(updated)
         self.vehicles = [
             vehicle
@@ -255,7 +270,10 @@ class HighwayEnv:
         if scenario == "empty":
             return []
         if scenario == "slow_lead":
-            return [VehicleState("lead", lane, 280.0, 4.0)]
+            return [
+                VehicleState("lead", lane, 280.0, 4.0),
+                VehicleState("traffic-follower", lane, -80.0, 14.0),
+            ]
         if scenario == "sudden_brake":
             return [VehicleState("lead", lane, 260.0, self.config.ego_start_speed)]
         if scenario == "obstacle":
