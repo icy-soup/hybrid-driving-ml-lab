@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from .dataset import DatasetCollector, load_dataset
+from .controllers import MPCPolicy
 from .environment import HighwayEnv
 from .events import EpisodeDiagnostics
 from .evaluation import evaluate_policy
@@ -49,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int, default=0)
 
     evaluate = subparsers.add_parser("evaluate", help="evaluate rule or neural policy")
-    evaluate.add_argument("--policy", choices=("rule", "neural", "hybrid"), default="rule")
+    evaluate.add_argument("--policy", choices=("rule", "neural", "hybrid", "mpc"), default="rule")
     evaluate.add_argument("--model", type=Path, default=Path("neural_model.pkl"))
     evaluate.add_argument("--episodes", type=int, default=20)
     evaluate.add_argument("--seed", type=int, default=0)
@@ -174,7 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(env.diagnostics.summary(), ensure_ascii=False, indent=2))
         return 0
 
-    if args.policy in ("neural", "hybrid"):
+    if args.policy == "mpc":
+        policy = MPCPolicy()
+    elif args.policy in ("neural", "hybrid"):
         learned_policy = NeuralPolicy(MLPClassifier.load(args.model))
         policy = SafetyShieldPolicy(learned_policy) if args.policy == "hybrid" else learned_policy
     else:
