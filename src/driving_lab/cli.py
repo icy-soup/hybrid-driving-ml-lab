@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .dataset import DatasetCollector, load_dataset
 from .environment import HighwayEnv
+from .events import EpisodeDiagnostics
 from .evaluation import evaluate_policy
 from .model import MLPClassifier
 from .policies import NeuralPolicy, RulePolicy, SafetyShieldPolicy
@@ -63,6 +64,18 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--seed", type=int, default=0)
     baseline.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="mixed")
     baseline.add_argument("--output", type=Path, default=Path("baseline.json"))
+
+    ui = subparsers.add_parser("ui", help="open the interactive Pygame viewer")
+    ui.add_argument("--policy", choices=("rule", "neural", "hybrid"), default="hybrid")
+    ui.add_argument("--model", type=Path, default=Path("experiments/models/neural_model.pkl"))
+    ui.add_argument("--seed", type=int, default=7)
+    ui.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="mixed")
+    ui.add_argument("--fps", type=int, default=10)
+
+    diagnose = subparsers.add_parser("diagnose", help="run one seeded episode and write JSONL diagnostics")
+    diagnose.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="random")
+    diagnose.add_argument("--seed", type=int, default=0)
+    diagnose.add_argument("--output", type=Path, default=Path("experiments/logs/diagnostics.jsonl"))
     return parser
 
 
@@ -132,6 +145,33 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(json.dumps(metrics, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "ui":
+        from .pygame_app import run as run_ui
+
+        return run_ui(
+            policy_name=args.policy,
+            model_path=args.model,
+            scenario=args.scenario,
+            seed=args.seed,
+            fps=args.fps,
+        )
+
+    if args.command == "diagnose":
+        env = HighwayEnv()
+        observation = env.reset(seed=args.seed, scenario=args.scenario)
+        policy = RulePolicy()
+        while True:
+            transition = env.step(policy.act(observation))
+            observation = transition.next_observation
+            if transition.done:
+                break
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        env.diagnostics.write_jsonl(args.output)
+        summary_path = args.output.with_suffix(".summary.json")
+        summary_path.write_text(json.dumps(env.diagnostics.summary(), ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(env.diagnostics.summary(), ensure_ascii=False, indent=2))
         return 0
 
     if args.policy in ("neural", "hybrid"):

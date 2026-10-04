@@ -8,7 +8,9 @@ from typing import Iterable
 import numpy as np
 
 from .config import EnvironmentConfig
+from .events import EpisodeDiagnostics, classify_collision
 from .physics import time_to_collision
+from .perception import VehicleGeometry
 from .rewards import EpisodeEvents, compute_reward
 from .scenarios import ScenarioSampler
 from .types import Action, ActionType, Observation, Transition, VehicleState
@@ -28,6 +30,7 @@ class HighwayEnv:
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles: list[VehicleState] = []
         self.episode_events = EpisodeEvents()
+        self.diagnostics = EpisodeDiagnostics(self.scenario)
         self._previous_vehicle_x: dict[str, float] = {}
         self._overtaken_vehicle_ids: set[str] = set()
 
@@ -43,6 +46,7 @@ class HighwayEnv:
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles = self._make_scenario(scenario)
         self.episode_events = EpisodeEvents()
+        self.diagnostics = EpisodeDiagnostics(scenario, seed)
         self._previous_vehicle_x = {vehicle.vehicle_id: vehicle.x for vehicle in self.vehicles}
         self._overtaken_vehicle_ids = set()
         return self.observe()
@@ -98,6 +102,15 @@ class HighwayEnv:
             vehicle.lane == self.ego.lane and abs(vehicle.x) <= self.config.collision_distance
             for vehicle in self.vehicles
         )
+        collision_events = []
+        for vehicle in self.vehicles:
+            if vehicle.lane == self.ego.lane and abs(vehicle.x) <= self.config.collision_distance:
+                ego_geometry = VehicleGeometry("ego", 0.0, self.ego.lane * self.config.lane_width, self.ego.lane, self.ego.length, self.ego.width, self.ego.speed)
+                traffic_geometry = VehicleGeometry(vehicle.vehicle_id, vehicle.x, vehicle.lane * self.config.lane_width, vehicle.lane, vehicle.length, vehicle.width, vehicle.speed, vehicle.mode)
+                collision_events.append(classify_collision(ego_geometry, traffic_geometry, step=self.step_count, scenario=self.scenario))
+        for event in collision_events:
+            self.diagnostics.record_collision(event)
+        self.diagnostics.record_step(self.step_count, {"speed": self.ego.speed, "ttc": observation.ttc[observation.lane], "collision": collision})
         done = collision or self.step_count >= self.config.max_steps
         next_observation = self.observe()
         lane_changed = self.ego.lane != previous_lane
@@ -126,6 +139,9 @@ class HighwayEnv:
             "shield_override": shield_override,
             "events": self.episode_events.as_dict(),
             "reward_components": breakdown.components,
+            "collision_events": [event.__dict__ for event in collision_events],
+            "vehicle_snapshot": [vehicle.__dict__ for vehicle in self.vehicles],
+            "diagnostics": self.diagnostics.summary(),
         }
         return Transition(observation, action, breakdown.total, next_observation, done, info)
 
@@ -188,11 +204,36 @@ class HighwayEnv:
                     vehicle.crashed,
                 )
             )
+        updated = self._resolve_traffic_spacing(updated)
         self.vehicles = [
             vehicle
             for vehicle in updated
             if -self.config.detection_distance <= vehicle.x <= self.config.detection_distance
         ]
+
+    def _resolve_traffic_spacing(self, vehicles: list[VehicleState]) -> list[VehicleState]:
+        """Keep traffic vehicles from occupying the same longitudinal space."""
+
+        resolved = list(vehicles)
+        for lane in range(self.config.lanes):
+            lane_indices = sorted(
+                (index for index, vehicle in enumerate(resolved) if vehicle.lane == lane),
+                key=lambda index: resolved[index].x,
+                reverse=True,
+            )
+            for front_index, rear_index in zip(lane_indices, lane_indices[1:]):
+                front = resolved[front_index]
+                rear = resolved[rear_index]
+                minimum_rear_x = front.x - self.config.traffic_min_gap
+                if rear.x > minimum_rear_x:
+                    resolved[rear_index] = VehicleState(
+                        rear.vehicle_id,
+                        rear.lane,
+                        minimum_rear_x,
+                        min(rear.speed, front.speed),
+                        rear.crashed,
+                    )
+        return resolved
 
     def _make_scenario(self, scenario: str) -> list[VehicleState]:
         lane = self.config.lanes // 2
@@ -212,10 +253,17 @@ class HighwayEnv:
         vehicles: list[VehicleState] = []
         count = int(self.rng.integers(4, 9))
         for index in range(count):
-            lane = int(self.rng.integers(0, self.config.lanes))
-            x = float(self.rng.integers(-250, 520))
-            if abs(x) < 80:
-                x += 180.0
+            for _ in range(100):
+                lane = int(self.rng.integers(0, self.config.lanes))
+                x = float(self.rng.integers(-250, 520))
+                if abs(x) < 80:
+                    x += 180.0
+                if all(
+                    vehicle.lane != lane
+                    or abs(vehicle.x - x) >= self.config.traffic_min_gap
+                    for vehicle in vehicles
+                ):
+                    break
             speed = float(self.rng.uniform(4.0, 16.0))
             vehicles.append(VehicleState(f"car-{index}", lane, x, speed))
         return vehicles
