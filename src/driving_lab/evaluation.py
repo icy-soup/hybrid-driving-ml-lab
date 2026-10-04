@@ -27,6 +27,8 @@ def evaluate_policy(
     overtakes: list[int] = []
     lane_changes: list[int] = []
     ttc_warnings: list[int] = []
+    distances: list[float] = []
+    scores: list[float] = []
     shield_overrides = 0
     total_steps = 0
     action_matches = 0
@@ -49,12 +51,14 @@ def evaluate_policy(
         observation = env.reset(seed=seed + episode, scenario=scenario)
         total_speed = 0.0
         total_return = 0.0
+        total_distance = 0.0
         steps = 0
         while True:
             action = policy.act(observation)
             shield_overrides += int(getattr(policy, "last_override", False))
             transition = env.step(action)
             total_speed += abs(env.ego.speed)
+            total_distance += abs(env.ego.speed)
             total_return += transition.reward
             steps += 1
             observation = transition.next_observation
@@ -67,6 +71,15 @@ def evaluate_policy(
                 overtakes.append(events["overtakes"])
                 lane_changes.append(events["lane_changes"])
                 ttc_warnings.append(events["ttc_warnings"])
+                distances.append(total_distance)
+                # Primary score is progress; safety terms are bounded episode
+                # penalties and overtakes are deliberately excluded.
+                scores.append(
+                    total_distance
+                    - 100.0 * int(transition.info["collision"])
+                    - 0.5 * events["ttc_warnings"]
+                    - 0.05 * events["lane_changes"]
+                )
                 total_steps += steps
                 break
 
@@ -80,6 +93,8 @@ def evaluate_policy(
         "average_overtakes": sum(overtakes) / len(overtakes),
         "average_lane_changes": sum(lane_changes) / len(lane_changes),
         "average_ttc_warnings": sum(ttc_warnings) / len(ttc_warnings),
+        "average_distance": sum(distances) / len(distances),
+        "average_score": sum(scores) / len(scores),
         "shield_override_rate": shield_overrides / max(total_steps, 1),
     }
     if reference_policy is not None:

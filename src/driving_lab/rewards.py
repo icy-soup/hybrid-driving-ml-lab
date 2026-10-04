@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class RewardConfig:
-    alive: float = 0.02
+    alive: float = 0.01
     speed_weight: float = 0.05
-    progress_weight: float = 0.01
+    progress_weight: float = 0.05
     target_speed: float = 12.0
-    overtake: float = 1.0
+    # Overtakes are logged for analysis, but intentionally low-weight because
+    # random traffic layouts should not dominate the learning signal.
+    overtake: float = 0.05
     ttc_warning: float = -0.2
     ttc_threshold: float = 2.5
     lane_change: float = -0.01
