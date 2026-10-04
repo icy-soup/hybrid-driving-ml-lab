@@ -46,6 +46,16 @@ python run.py evaluate --policy hybrid --model experiments/models/neural_model.p
 python run.py baseline --model experiments/models/neural_model.pkl --episodes 20 --seed 7 --scenario mixed --output experiments/results/baseline.json
 ```
 
+无需训练模型也可以直接打开当前 MPC 验收界面：
+
+```powershell
+python run.py ui --policy mpc --scenario mixed --seed 7
+```
+
+窗口左侧显示三车道实时交通，右侧显示速度、距离主分、TTC、碰撞和最近事件。按 `1` 切换 Rule，按 `2` 切换 MPC，按 `3` 切换 Hybrid；按 `R` 重置场景，按 `Space` 暂停，按 `Esc` 退出。界面使用与后台评测相同的 `HighwayEnv` 和策略实现。
+
+也可以直接双击根目录下的 `start_ui.bat` 启动 MPC 验收界面，不需要先训练模型。
+
 `baseline` 会在同一组 seed 和场景下统一评测 `rule`、`neural`、`hybrid` 三条基线。支持的场景包括 `empty`、`slow_lead`、`sudden_brake`、`obstacle`、`rear_approach`、`random` 和可复现的 `mixed`。
 
 ## 动作编号
@@ -72,7 +82,7 @@ RulePolicy ──→ episode-aware 数据集 ──→ NumPy MLP
 
 观测保留原项目的 11 维特征。环境提供存活、速度跟踪、前进进度、超车、TTC 风险、变道、安全接管和碰撞等奖励分量；评测输出碰撞率、平均回报、平均存活步数、平均速度及事件统计。
 
-强化学习属于后续阶段，目前尚未实现或训练 DQN。图形界面只作为 `legacy` 展示方案保留，后续可围绕 `HighwayEnv` 接入。
+当前已提供 GPU/CPU 双模式 DQN 训练骨架、行为初始化和安全盾；正式长时间训练与策略对比仍属于后续实验。图形界面读取 `HighwayEnv` 快照，不维护第二套车辆逻辑。
 
 ## 测试
 
