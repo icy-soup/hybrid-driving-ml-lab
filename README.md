@@ -27,6 +27,16 @@ F:\Missions And Materials\神经与规则混合型智驾项目
 
 ## 快速运行
 
+### 本机一键验收
+
+如果已经配置好本机 Python/Conda 环境，可以直接双击 `run_acceptance.bat`，或在 VS Code 终端执行：
+
+```powershell
+cmd /d /c run_acceptance.bat
+```
+
+该脚本不会重新创建环境或下载依赖，只执行测试、代码编译、数据采集、模型训练和三策略基线评测。环境复现配置见 `environment.yml`。
+
 在项目根目录执行：
 
 ```powershell
