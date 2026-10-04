@@ -41,3 +41,11 @@ def test_snapshot_is_detached_from_environment_objects():
     snapshot = build_snapshot(env, last_action=4, total_reward=0.0)
     snapshot["ego"]["speed"] = -999.0
     assert env.ego.speed != -999.0
+
+
+def test_primary_score_is_non_negative_distance_score_not_raw_reward():
+    env = HighwayEnv()
+    env.reset(seed=1, scenario="obstacle")
+    snapshot = build_snapshot(env, last_action=1, total_reward=-20.0)
+    assert snapshot["score"] >= 0.0
+    assert snapshot["score"] != -20.0

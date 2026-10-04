@@ -18,6 +18,50 @@ ACTION_LABELS = {
     3: "LANE RIGHT",
     4: "CRUISE",
 }
+
+
+def _asset_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "assets" / "pygame"
+
+
+def _load_asset(name: str):
+    import pygame
+
+    matches = list((_asset_root() / "images" / "others").glob(name))
+    if not matches:
+        return None
+    try:
+        return pygame.image.load(str(matches[0])).convert_alpha()
+    except pygame.error:
+        return pygame.image.load(str(matches[0]))
+
+
+def _load_legacy_font(size: int, bold: bool = False):
+    import pygame
+
+    fonts = list((_asset_root() / "font").glob("*.ttf"))
+    if fonts:
+        try:
+            return pygame.font.Font(str(fonts[1 if size >= 24 and len(fonts) > 1 else 0]), size)
+        except pygame.error:
+            pass
+    return pygame.font.SysFont("microsoftyahei", size, bold=bold)
+
+
+def _load_vehicle_sprite(crashed: bool = False):
+    import pygame
+
+    matches = sorted((_asset_root() / "images" / "vehicles").glob("*.png"))
+    if not matches:
+        return None
+    try:
+        image = pygame.image.load(str(matches[0])).convert_alpha()
+        if crashed:
+            image = image.copy()
+            image.fill((180, 60, 60, 180), special_flags=pygame.BLEND_RGBA_MULT)
+        return image
+    except pygame.error:
+        return None
 POLICY_LABELS = {"rule": "RULE", "mpc": "MPC", "neural": "NEURAL", "hybrid": "HYBRID"}
 
 
@@ -48,12 +92,22 @@ def build_snapshot(env: HighwayEnv, *, last_action: int, total_reward: float) ->
                 "reason": event.reason,
             }
         )
-    distance = float(env.step_count * abs(env.ego.speed))
+    distance = float(getattr(env, "distance_travelled", 0.0))
+    # This is the acceptance score, not raw shaped reward. It is monotonic
+    # with progress and never displays a negative number in the UI.
+    primary_score = max(
+        0.0,
+        distance
+        - 100.0 * int(diagnostics.get("collision_count", 0))
+        - 0.5 * int(events.get("ttc_warnings", 0))
+        - 0.05 * int(events.get("lane_changes", 0)),
+    )
     return {
         "step": int(env.step_count),
         "scenario": str(env.scenario),
         "last_action": int(last_action),
-        "score": float(total_reward),
+        "score": primary_score,
+        "shaped_reward": float(total_reward),
         "ego": {
             "x": float(env.ego.x),
             "lane": int(env.ego.lane),
@@ -73,17 +127,22 @@ def render_snapshot(screen: Any, snapshot: dict[str, Any], assets: Any = None, m
 
     metrics = {**snapshot.get("metrics", {}), **(metrics or {})}
     width, height = screen.get_size()
-    panel_x = int(width * 0.68)
-    screen.fill((14, 21, 32))
-    pygame.draw.rect(screen, (31, 41, 56), (0, 0, panel_x, height))
-    pygame.draw.rect(screen, (247, 249, 252), (panel_x, 0, width - panel_x, height))
-    title = pygame.font.SysFont("segoeui", 24, bold=True)
-    body = pygame.font.SysFont("segoeui", 16)
-    small = pygame.font.SysFont("segoeui", 13)
-    _text(screen, title, "HYBRID DRIVING LAB", (28, 22), (240, 244, 250))
-    _text(screen, small, f"SCENARIO  {str(snapshot.get('scenario', '')) .upper()}", (30, 54), (145, 163, 186))
-    road = pygame.Rect(24, 86, panel_x - 48, height - 132)
-    pygame.draw.rect(screen, (52, 61, 72), road, border_radius=16)
+    panel_x = min(910, max(420, width - 240))
+    screen.fill((191, 191, 191))
+    pygame.draw.rect(screen, (60, 60, 60), (panel_x, 0, width - panel_x, height))
+    title = _load_legacy_font(28, bold=True)
+    body = _load_legacy_font(17)
+    small = _load_legacy_font(14)
+    _text(screen, title, "控制中心", (panel_x + 76, 8), (255, 255, 255))
+    _text(screen, small, f"场景：{snapshot.get('scenario', 'random')}", (panel_x + 18, 42), (0, 255, 255))
+    road = pygame.Rect(0, 0, panel_x, height)
+    lane_asset = _load_asset("车道.png")
+    rail_asset = _load_asset("白色护栏.png")
+    if lane_asset is not None:
+        lane_scaled = pygame.transform.scale(lane_asset, (panel_x, min(165, height)))
+        screen.blit(lane_scaled, (0, max(0, (height - lane_scaled.get_height()) // 2)))
+    else:
+        pygame.draw.rect(screen, (150, 150, 150), road)
     lane_height = road.height // 3
     for lane in range(4):
         y = road.top + lane * lane_height
@@ -91,35 +150,44 @@ def render_snapshot(screen: Any, snapshot: dict[str, Any], assets: Any = None, m
     ego = snapshot.get("ego", {})
     ego_x = road.left + road.width * 0.32
     ego_y = road.top + (int(ego.get("lane", 1)) + 0.5) * lane_height
-    pygame.draw.rect(screen, (45, 151, 255), (ego_x - 25, ego_y - 18, 50, 36), border_radius=8)
-    _text(screen, small, "EGO", (ego_x - 17, ego_y - 8), (235, 247, 255))
+    ego_sprite = _load_vehicle_sprite()
+    if ego_sprite is not None:
+        ego_sprite = pygame.transform.smoothscale(ego_sprite, (58, 46))
+        screen.blit(ego_sprite, (ego_x - 29, ego_y - 23))
+    else:
+        pygame.draw.rect(screen, (45, 151, 255), (ego_x - 25, ego_y - 18, 50, 36), border_radius=8)
+    _text(screen, small, "EGO", (ego_x - 17, ego_y + 25), (0, 0, 0))
     scale = 1.35
     for vehicle in snapshot.get("vehicles", []):
         x = ego_x + (float(vehicle.get("x", 0.0)) * scale)
         y = road.top + (int(vehicle.get("lane", 1)) + 0.5) * lane_height
         if road.left + 16 <= x <= road.right - 16:
-            color = (226, 75, 76) if vehicle.get("crashed") else (240, 166, 65)
-            pygame.draw.rect(screen, color, (x - 22, y - 16, 44, 32), border_radius=7)
+            sprite = _load_vehicle_sprite(bool(vehicle.get("crashed")))
+            if sprite is not None:
+                sprite = pygame.transform.smoothscale(sprite, (58, 46))
+                screen.blit(sprite, (x - 29, y - 23))
+            else:
+                color = (226, 75, 76) if vehicle.get("crashed") else (240, 166, 65)
+                pygame.draw.rect(screen, color, (x - 22, y - 16, 44, 32), border_radius=7)
             _text(screen, small, str(vehicle.get("mode", "CRUISE")), (x - 28, y + 20), (222, 230, 237))
-    _panel_heading(screen, title, body, panel_x + 24, 28, "LIVE AUDIT")
-    _metric(screen, body, "Policy action", ACTION_LABELS.get(snapshot.get("last_action", 4), "UNKNOWN"), (panel_x + 24, 82))
-    _metric(screen, body, "Step", str(snapshot.get("step", 0)), (panel_x + 24, 112))
-    _metric(screen, body, "Speed", f"{float(ego.get('speed', 0.0)):.1f} m/s", (panel_x + 24, 142))
-    _metric(screen, body, "Distance", f"{float(ego.get('distance', 0.0)):.1f}", (panel_x + 24, 172))
-    _metric(screen, body, "Score", f"{float(snapshot.get('score', 0.0)):.2f}", (panel_x + 24, 202))
-    _panel_heading(screen, title, body, panel_x + 24, 252, "SAFETY")
-    _metric(screen, body, "Collisions", str(metrics.get("collision_count", 0)), (panel_x + 24, 306))
-    _metric(screen, body, "TTC warnings", str(metrics.get("ttc_warnings", 0)), (panel_x + 24, 336))
-    _metric(screen, body, "Lane changes", str(metrics.get("lane_changes", 0)), (panel_x + 24, 366))
-    _panel_heading(screen, title, body, panel_x + 24, 416, "RECENT EVENTS")
+    _metric(screen, body, "动作", ACTION_LABELS.get(snapshot.get("last_action", 4), "UNKNOWN"), (panel_x + 18, 78), color=(255, 255, 255))
+    _metric(screen, body, "步数", str(snapshot.get("step", 0)), (panel_x + 18, 108), color=(255, 255, 255))
+    _metric(screen, body, "速度", f"{float(ego.get('speed', 0.0)):.1f} m/s", (panel_x + 18, 138), color=(255, 255, 255))
+    _metric(screen, body, "距离", f"{float(ego.get('distance', 0.0)):.1f}", (panel_x + 18, 168), color=(255, 255, 255))
+    _metric(screen, body, "主分", f"{float(snapshot.get('score', 0.0)):.2f}", (panel_x + 18, 198), color=(0, 255, 0))
+    _panel_heading(screen, title, body, panel_x + 18, 238, "安全诊断")
+    _metric(screen, body, "碰撞", str(metrics.get("collision_count", 0)), (panel_x + 18, 284), color=(255, 255, 255))
+    _metric(screen, body, "TTC警告", str(metrics.get("ttc_warnings", 0)), (panel_x + 18, 314), color=(255, 255, 255))
+    _metric(screen, body, "变道", str(metrics.get("lane_changes", 0)), (panel_x + 18, 344), color=(255, 255, 255))
+    _panel_heading(screen, title, body, panel_x + 18, 378, "最近事件")
     recent = snapshot.get("recent_events", [])
     if not recent:
-        _text(screen, small, "No collision events", (panel_x + 24, 470), (100, 113, 128))
+        _text(screen, small, "暂无碰撞事件", (panel_x + 18, 418), (210, 210, 210))
     for index, event in enumerate(recent[-3:]):
-        y = 470 + index * 42
-        _text(screen, small, str(event.get("type", "event")).upper(), (panel_x + 24, y), (194, 71, 75))
-        _text(screen, small, str(event.get("vehicles", "")), (panel_x + 24, y + 16), (73, 84, 98))
-    _text(screen, small, "SPACE pause   R reset   ESC exit", (28, height - 24), (178, 190, 204))
+        y = 418 + index * 32
+        _text(screen, small, str(event.get("type", "event")), (panel_x + 18, y), (255, 100, 100))
+        _text(screen, small, str(event.get("vehicles", "")), (panel_x + 18, y + 15), (230, 230, 230))
+    _text(screen, small, "SPACE暂停  R重置  ESC退出", (12, height - 24), (0, 0, 0))
 
 
 def world_to_screen(
@@ -295,9 +363,9 @@ def _panel_card(pygame: Any, screen: Any, rect: tuple[int, int, int, int], headi
         _text(screen, title_font, value, (rect[0] + 18, rect[1] + 47), (31, 52, 70))
 
 
-def _metric(screen: Any, font: Any, label: str, value: str, position: tuple[int, int]) -> None:
-    _text(screen, font, label, position, (111, 126, 140))
-    _text(screen, font, value, (position[0] + 126, position[1]), (31, 52, 70))
+def _metric(screen: Any, font: Any, label: str, value: str, position: tuple[int, int], color=(31, 52, 70)) -> None:
+    _text(screen, font, label, position, color)
+    _text(screen, font, value, (position[0] + 110, position[1]), color)
 
 
 def _panel_heading(screen: Any, title_font: Any, body_font: Any, x: int, y: int, heading: str) -> None:

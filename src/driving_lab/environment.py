@@ -27,6 +27,7 @@ class HighwayEnv:
         self.rng = np.random.default_rng()
         self.scenario = "empty"
         self.step_count = 0
+        self.distance_travelled = 0.0
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles: list[VehicleState] = []
         self.episode_events = EpisodeEvents()
@@ -43,6 +44,7 @@ class HighwayEnv:
             scenario = ScenarioSampler().sample(self.rng)
         self.scenario = scenario
         self.step_count = 0
+        self.distance_travelled = 0.0
         self.ego = VehicleState("ego", self.config.lanes // 2, 0.0, self.config.ego_start_speed)
         self.vehicles = self._make_scenario(scenario)
         self.episode_events = EpisodeEvents()
@@ -110,7 +112,6 @@ class HighwayEnv:
                 collision_events.append(classify_collision(ego_geometry, traffic_geometry, step=self.step_count, scenario=self.scenario))
         for event in collision_events:
             self.diagnostics.record_collision(event)
-        self.diagnostics.record_step(self.step_count, {"speed": self.ego.speed, "ttc": observation.ttc[observation.lane], "collision": collision})
         done = collision or self.step_count >= self.config.max_steps
         next_observation = self.observe()
         lane_changed = self.ego.lane != previous_lane
@@ -131,16 +132,30 @@ class HighwayEnv:
             collision=collision,
             shield_override=shield_override,
         )
+        self.distance_travelled += abs(self.ego.speed)
+        self.diagnostics.record_step(
+            self.step_count,
+            {
+                "speed": self.ego.speed,
+                "ttc": current_ttc,
+                "collision": collision,
+                "reward": breakdown.total,
+                "distance": self.distance_travelled,
+                "reward_components": breakdown.components,
+                "vehicles": [_vehicle_log(vehicle) for vehicle in self.vehicles],
+            },
+        )
         info = {
             "collision": collision,
             "scenario": self.scenario,
             "step": self.step_count,
             "speed": self.ego.speed,
+            "distance": self.distance_travelled,
             "shield_override": shield_override,
             "events": self.episode_events.as_dict(),
             "reward_components": breakdown.components,
             "collision_events": [event.__dict__ for event in collision_events],
-            "vehicle_snapshot": [vehicle.__dict__ for vehicle in self.vehicles],
+            "vehicle_snapshot": [_vehicle_log(vehicle) for vehicle in self.vehicles],
             "diagnostics": self.diagnostics.summary(),
         }
         return Transition(observation, action, breakdown.total, next_observation, done, info)
@@ -267,3 +282,10 @@ class HighwayEnv:
             speed = float(self.rng.uniform(4.0, 16.0))
             vehicles.append(VehicleState(f"car-{index}", lane, x, speed))
         return vehicles
+
+
+def _vehicle_log(vehicle: VehicleState) -> dict[str, object]:
+    """Stable human-readable vehicle record for JSONL diagnostics/UI."""
+    record = dict(vehicle.__dict__)
+    record["mode"] = vehicle.mode.name
+    return record
