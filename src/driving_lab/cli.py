@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--output", type=Path, default=Path("baseline.json"))
 
     ui = subparsers.add_parser("ui", help="open the interactive Pygame viewer")
-    ui.add_argument("--policy", choices=("rule", "neural", "hybrid"), default="hybrid")
+    ui.add_argument("--policy", choices=("rule", "mpc", "neural", "hybrid"), default="hybrid")
     ui.add_argument("--model", type=Path, default=Path("experiments/models/neural_model.pkl"))
     ui.add_argument("--seed", type=int, default=7)
     ui.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="mixed")
