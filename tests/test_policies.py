@@ -21,7 +21,7 @@ def make_observation(**overrides):
     return Observation(**values)
 
 
-def test_rule_policy_brakes_for_a_crashed_obstacle():
+def test_rule_policy_changes_lane_for_a_crashed_obstacle_when_clear():
     observation = make_observation(
         front_distance=(math.inf, 120.0, math.inf),
         front_speed=(None, 0.0, None),
@@ -29,7 +29,7 @@ def test_rule_policy_brakes_for_a_crashed_obstacle():
         crashed_front=(False, True, False),
     )
 
-    assert RulePolicy().act(observation).kind is ActionType.BRAKE
+    assert RulePolicy().act(observation).kind is ActionType.LANE_LEFT
 
 
 def test_rule_policy_accelerates_when_road_is_clear_and_below_target_speed():
@@ -72,3 +72,33 @@ def test_safety_shield_overrides_a_neural_cruise_for_imminent_collision():
     action = SafetyShieldPolicy(AlwaysCruise()).act(observation)
 
     assert action.kind is ActionType.BRAKE
+
+
+def test_rule_policy_brakes_early_for_a_moving_lead_using_ego_speed():
+    # Relative speed is only 4, but stopping distance must be based on the
+    # ego's 8 speed while the lead keeps moving at 4.
+    observation = make_observation(
+        speed=-8.0,
+        front_distance=(math.inf, 180.0, math.inf),
+        front_speed=(None, -4.0, None),
+        ttc=(math.inf, 45.0, math.inf),
+        rear_distance=(100.0, math.inf, 100.0),
+    )
+
+    assert RulePolicy().act(observation).kind is ActionType.BRAKE
+
+
+def test_rule_policy_looks_at_both_adjacent_lanes_before_choosing_escape():
+    """A close lead with two neighbouring vehicles must be planned jointly."""
+    observation = make_observation(
+        speed=-12.0,
+        front_distance=(150.0, 135.0, 240.0),
+        front_speed=(-10.0, -2.0, -11.0),
+        ttc=(75.0, 13.5, 240.0),
+        rear_distance=(190.0, 45.0, 35.0),
+        rear_speed=(-10.0, -18.0, -18.0),
+    )
+    policy = RulePolicy()
+    action = policy.act(observation)
+    assert action.kind is ActionType.BRAKE
+    assert policy.last_reason.startswith("brake")

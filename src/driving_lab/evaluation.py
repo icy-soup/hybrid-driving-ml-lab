@@ -89,6 +89,7 @@ def evaluate_policy(
         "collision_rate": collision_count / episodes,
         "average_survival_steps": sum(survival_steps) / len(survival_steps),
         "average_speed": sum(speeds) / len(speeds),
+        "average_speed_kmh": (sum(speeds) / len(speeds)) * 3.6,
         "average_return": sum(returns) / len(returns),
         "average_overtakes": sum(overtakes) / len(overtakes),
         "average_lane_changes": sum(lane_changes) / len(lane_changes),

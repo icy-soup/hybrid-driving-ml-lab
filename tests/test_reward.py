@@ -37,7 +37,10 @@ def test_collision_ends_episode_and_applies_terminal_penalty():
 
     transition = None
     for _ in range(100):
-        transition = env.step(Action(ActionType.BRAKE))
+        # Deliberately keep cruising so this test exercises terminal collision
+        # accounting; the braking controller is verified separately and must
+        # now stop safely before the obstacle.
+        transition = env.step(Action(ActionType.CRUISE))
         if transition.done:
             break
 

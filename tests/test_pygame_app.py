@@ -6,6 +6,13 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from driving_lab.pygame_app import ACTION_LABELS, POLICY_LABELS, world_to_screen
 
 
+def test_interactive_ui_defaults_to_random_traffic_scenario():
+    from driving_lab.cli import build_parser
+
+    args = build_parser().parse_args(["ui"])
+    assert args.scenario == "random"
+
+
 def test_world_to_screen_keeps_ego_anchor_and_maps_lanes():
     assert world_to_screen(0.0, 1, ego_x=220.0, scale=1.5) == (220.0, 300.0)
     assert world_to_screen(100.0, 0, ego_x=220.0, scale=1.5) == (370.0, 180.0)

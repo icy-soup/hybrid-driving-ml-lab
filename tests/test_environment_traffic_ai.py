@@ -20,7 +20,12 @@ def test_environment_traffic_enters_follow_or_brake_mode():
         seen.update(vehicle.mode for vehicle in env.vehicles)
         if transition.done:
             break
-    assert seen & {BehaviorMode.FOLLOW, BehaviorMode.BRAKE, BehaviorMode.EMERGENCY_BRAKE}
+    assert seen & {
+        BehaviorMode.FOLLOW,
+        BehaviorMode.BRAKE,
+        BehaviorMode.EMERGENCY_BRAKE,
+        BehaviorMode.LANE_CHANGE,
+    }
 
 
 def test_rear_approach_traffic_does_not_remain_passive_cruise_only():

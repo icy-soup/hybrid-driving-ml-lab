@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from driving_lab.environment import HighwayEnv
 from driving_lab.pygame_app import build_snapshot, render_snapshot
+from driving_lab.types import Action, ActionType
 
 
 def test_renderer_consumes_snapshot_without_mutating_it():
@@ -33,6 +34,8 @@ def test_snapshot_contains_audit_fields_from_environment():
     assert snapshot["ego"]["distance"] >= 0.0
     assert snapshot["vehicles"][0]["vehicle_id"] == "rear"
     assert "mode" in snapshot["vehicles"][0]
+    assert snapshot["vehicles"][0]["vehicle_type"] == "跑车"
+    assert snapshot["vehicles"][0]["color"] == "红色"
 
 
 def test_snapshot_is_detached_from_environment_objects():
@@ -49,3 +52,26 @@ def test_primary_score_is_non_negative_distance_score_not_raw_reward():
     snapshot = build_snapshot(env, last_action=1, total_reward=-20.0)
     assert snapshot["score"] >= 0.0
     assert snapshot["score"] != -20.0
+
+
+def test_primary_score_is_normalized_and_separate_from_raw_distance():
+    env = HighwayEnv()
+    observation = env.reset(seed=1, scenario="empty")
+    transition = env.step(Action(ActionType.CRUISE))
+
+    snapshot = build_snapshot(env, last_action=4, total_reward=transition.reward)
+
+    assert 0.0 <= snapshot["score"] <= 100.0
+    assert snapshot["score"] != snapshot["ego"]["distance"]
+
+
+def test_snapshot_uses_continuous_lateral_position_for_screen_monitoring():
+    env = HighwayEnv()
+    env.reset(seed=1, scenario="rear_approach")
+    env.vehicles = [env.vehicles[0].__class__(
+        **{**env.vehicles[0].__dict__, "y": 25.0}
+    )]
+
+    snapshot = build_snapshot(env, last_action=4, total_reward=0.0)
+
+    assert snapshot["vehicles"][0]["screen_bottom"] == 225.0

@@ -6,4 +6,5 @@ dependencies:
   - python=3.11
   - numpy>=1.26
   - pytest>=8.0
+  - pygame>=2.5
   - pip

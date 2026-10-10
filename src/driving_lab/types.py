@@ -60,6 +60,16 @@ class VehicleState:
     length: float = 10.0
     width: float = 4.0
     mode: BehaviorMode = BehaviorMode.CRUISE
+    # Optional legacy Pygame identity; appended to preserve positional callers.
+    vehicle_type: str | None = None
+    color: str | None = None
+    sprite_state: int = 1
+    # Number of render frames for which the legacy explosion overlay remains visible.
+    explosion_frames: int = 0
+
+    @property
+    def exploding(self) -> bool:
+        return self.explosion_frames > 0
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,7 @@ class Observation:
     front_speed: tuple[float | None, float | None, float | None]
     ttc: tuple[float, float, float] = (math.inf, math.inf, math.inf)
     rear_distance: tuple[float, float, float] = (math.inf, math.inf, math.inf)
+    rear_speed: tuple[float | None, float | None, float | None] = (None, None, None)
     crashed_front: tuple[bool, bool, bool] = (False, False, False)
     left_rear_present: bool = False
     right_rear_present: bool = False

@@ -27,16 +27,23 @@ class CollisionEvent:
 
 
 def classify_collision(a: VehicleGeometry, b: VehicleGeometry, *, step: int, scenario: str) -> CollisionEvent:
-    gap = b.x - b.length / 2.0 - (a.x + a.length / 2.0)
     if a.lane == b.lane:
+        # x increases in the direction of travel. Normalize the pair so the
+        # event has the same geometry whichever participant is passed first.
+        rear, front = (a, b) if a.x <= b.x else (b, a)
+        gap = front.x - front.length / 2.0 - (rear.x + rear.length / 2.0)
         collision_type = "rear_end"
         reason = "same_lane_longitudinal_overlap"
+        vehicle_a, vehicle_b = rear.vehicle_id, front.vehicle_id
+        closing = rear.speed - front.speed
     else:
+        gap = 0.0
         collision_type = "side"
         reason = "lateral_overlap_during_lane_interaction"
-    closing = a.speed - b.speed
+        vehicle_a, vehicle_b = a.vehicle_id, b.vehicle_id
+        closing = a.speed - b.speed
     ttc = gap / closing if closing > 0 and gap >= 0 else (0.0 if gap < 0 else math.inf)
-    return CollisionEvent(a.vehicle_id, b.vehicle_id, collision_type, step, scenario, a.lane, b.lane, gap, closing, ttc, reason)
+    return CollisionEvent(vehicle_a, vehicle_b, collision_type, step, scenario, a.lane, b.lane, gap, closing, ttc, reason)
 
 
 @dataclass

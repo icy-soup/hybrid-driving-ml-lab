@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .environment import HighwayEnv
+from .config import EnvironmentConfig
 from .controllers import MPCPolicy
 from .model import MLPClassifier
 from .policies import NeuralPolicy, RulePolicy, SafetyShieldPolicy
@@ -18,6 +19,11 @@ ACTION_LABELS = {
     3: "LANE RIGHT",
     4: "CRUISE",
 }
+
+
+def _kmh(speed: float | None) -> float:
+    """Convert the simulation's internal m/s value to the UI's km/h."""
+    return abs(float(speed or 0.0)) * 3.6
 
 
 def _asset_root() -> Path:
@@ -48,20 +54,54 @@ def _load_legacy_font(size: int, bold: bool = False):
     return pygame.font.SysFont("microsoftyahei", size, bold=bold)
 
 
-def _load_vehicle_sprite(crashed: bool = False):
+def _load_vehicle_sprite(vehicle_key: str = "ego", crashed: bool = False, color: str | None = None, state: int = 1):
     import pygame
 
-    matches = sorted((_asset_root() / "images" / "vehicles").glob("*.png"))
+    vehicle_dir = _asset_root() / "images" / "vehicles"
+    exact_match = False
+    if vehicle_key != "ego" and color:
+        exact = vehicle_dir / f"{vehicle_key}_{color}{max(0, min(2, int(state)))}.png"
+        exact_match = exact.exists()
+        matches = [exact] if exact_match else sorted(vehicle_dir.glob("*.png"))
+    else:
+        matches = sorted(vehicle_dir.glob("*.png"))
     if not matches:
         return None
     try:
-        image = pygame.image.load(str(matches[0])).convert_alpha()
+        index = sum(ord(char) for char in vehicle_key) % len(matches)
+        image = pygame.image.load(str(matches[index])).convert_alpha()
+        if vehicle_key != "ego" and not exact_match:
+            palette = ((55, 145, 235), (230, 86, 76), (239, 173, 58), (83, 190, 116), (173, 104, 219))
+            tint = palette[index % len(palette)]
+            overlay = pygame.Surface(image.get_size(), pygame.SRCALPHA)
+            overlay.fill((*tint, 255))
+            image.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         if crashed:
             image = image.copy()
             image.fill((180, 60, 60, 180), special_flags=pygame.BLEND_RGBA_MULT)
         return image
     except pygame.error:
         return None
+
+
+def _load_explosion_sprite():
+    """Load the same 60x60 explosion sprite used by the legacy UI."""
+    return _load_asset("爆炸.png")
+
+
+def _legacy_sprite_size(vehicle_type: str | None, *, ego: bool = False) -> tuple[int, int]:
+    """Return the dimensions used by the legacy vehicle_details table."""
+    if ego:
+        return 80, 38
+    return {
+        "电动四轮车": (60, 48),
+        "小轿车": (70, 44),
+        "大卡车": (80, 60),
+        "大巴车": (120, 72),
+        "面包车": (75, 55),
+        "卫星车": (70, 56),
+        "跑车": (80, 38),
+    }.get(vehicle_type or "", (70, 44))
 POLICY_LABELS = {"rule": "RULE", "mpc": "MPC", "neural": "NEURAL", "hybrid": "HYBRID"}
 
 
@@ -70,7 +110,12 @@ def build_snapshot(env: HighwayEnv, *, last_action: int, total_reward: float) ->
     events = env.episode_events.as_dict()
     diagnostics = env.diagnostics.summary()
     vehicles = []
+    monitor = []
     for vehicle in env.vehicles:
+        vehicle_type = vehicle.vehicle_type
+        sprite_width, sprite_height = _legacy_sprite_size(vehicle_type)
+        screen_left = 455.0 + float(vehicle.x) - sprite_width / 2.0
+        screen_bottom = 200.0 + float(vehicle.y if vehicle.y is not None else vehicle.lane * env.config.lane_width)
         vehicles.append(
             {
                 "vehicle_id": vehicle.vehicle_id,
@@ -81,6 +126,26 @@ def build_snapshot(env: HighwayEnv, *, last_action: int, total_reward: float) ->
                 "mode": vehicle.mode.name,
                 "crashed": bool(vehicle.crashed),
                 "target_lane": vehicle.target_lane,
+                "vehicle_type": vehicle.vehicle_type,
+                "color": vehicle.color,
+                "sprite_state": int(vehicle.sprite_state),
+                "exploding": bool(vehicle.exploding),
+                "explosion_frames": int(vehicle.explosion_frames),
+                "screen_left": screen_left,
+                "screen_bottom": screen_bottom,
+                "sprite_width": sprite_width,
+                "sprite_height": sprite_height,
+            }
+        )
+        monitor.append(
+            {
+                "vehicle_id": vehicle.vehicle_id,
+                "sprite": f"{vehicle_type or 'unknown'}_{vehicle.color or 'unknown'}{int(vehicle.sprite_state)}",
+                "screen_left": screen_left,
+                "screen_bottom": screen_bottom,
+                "lane_error": float((vehicle.y if vehicle.y is not None else vehicle.lane * env.config.lane_width) - vehicle.lane * env.config.lane_width),
+                "inside_road": bool(-400.0 <= screen_left <= 1310.0),
+                "mode": vehicle.mode.name,
             }
         )
     recent_events = []
@@ -93,15 +158,18 @@ def build_snapshot(env: HighwayEnv, *, last_action: int, total_reward: float) ->
             }
         )
     distance = float(getattr(env, "distance_travelled", 0.0))
-    # This is the acceptance score, not raw shaped reward. It is monotonic
-    # with progress and never displays a negative number in the UI.
-    primary_score = max(
-        0.0,
-        distance
-        - 100.0 * int(diagnostics.get("collision_count", 0))
-        - 0.5 * int(events.get("ttc_warnings", 0))
-        - 0.05 * int(events.get("lane_changes", 0)),
+    # UI score is a bounded progress score; raw distance remains visible as a
+    # separate metric. Distance is the main term, while safety events only
+    # subtract bounded penalties so traffic randomness cannot dominate it.
+    reference_distance = max(1.0, float(env.config.max_steps * env.config.ego_start_speed))
+    progress_score = min(100.0, 100.0 * distance / reference_distance)
+    safety_penalty = min(
+        100.0,
+        100.0 * int(diagnostics.get("collision_count", 0))
+        + 0.5 * int(events.get("ttc_warnings", 0))
+        + 0.05 * int(events.get("lane_changes", 0)),
     )
+    primary_score = max(0.0, progress_score - safety_penalty)
     return {
         "step": int(env.step_count),
         "scenario": str(env.scenario),
@@ -111,11 +179,23 @@ def build_snapshot(env: HighwayEnv, *, last_action: int, total_reward: float) ->
         "ego": {
             "x": float(env.ego.x),
             "lane": int(env.ego.lane),
+            "y": float(env.ego.y if env.ego.y is not None else env.ego.lane * env.config.lane_width),
+            "target_lane": env.ego.target_lane,
             "speed": float(env.ego.speed),
+            "impact_speed": getattr(env, "last_impact_speed", None),
+            "impact_ttc": getattr(env, "last_impact_ttc", None),
+            "action_before_collision": getattr(env, "last_action_name", None),
             "distance": distance,
             "mode": env.ego.mode.name,
+            "sprite_state": int(env.ego.sprite_state),
+            "vehicle_type": env.ego.vehicle_type,
+            "color": env.ego.color,
+            "crashed": bool(env.ego.crashed),
+            "exploding": bool(env.ego.exploding),
+            "explosion_frames": int(env.ego.explosion_frames),
         },
         "vehicles": vehicles,
+        "monitor": monitor,
         "metrics": {**events, **diagnostics, "distance": distance},
         "recent_events": recent_events,
     }
@@ -138,41 +218,79 @@ def render_snapshot(screen: Any, snapshot: dict[str, Any], assets: Any = None, m
     road = pygame.Rect(0, 0, panel_x, height)
     lane_asset = _load_asset("车道.png")
     rail_asset = _load_asset("白色护栏.png")
+    # Scrolling assets and sprites are strictly clipped to the 910 px road;
+    # they must never paint over the control panel.
+    screen.set_clip(road)
+    road_offset = -float(snapshot.get("ego", {}).get("distance", 0.0)) % max(1, panel_x)
     if lane_asset is not None:
         lane_scaled = pygame.transform.scale(lane_asset, (panel_x, min(165, height)))
-        screen.blit(lane_scaled, (0, max(0, (height - lane_scaled.get_height()) // 2)))
+        # Legacy Main.py scrolls the road texture by the ego's longitudinal
+        # motion and repeats it across the full 910 px road.
+        screen.blit(lane_scaled, (road_offset - panel_x, 150))
+        screen.blit(lane_scaled, (road_offset, 150))
     else:
         pygame.draw.rect(screen, (150, 150, 150), road)
-    lane_height = road.height // 3
-    for lane in range(4):
-        y = road.top + lane * lane_height
-        pygame.draw.line(screen, (176, 185, 194), (road.left + 12, y), (road.right - 12, y), 2 if lane in (0, 3) else 1)
+    if rail_asset is not None:
+        rail_scaled = pygame.transform.scale(rail_asset, (panel_x, 60))
+        for x in (road_offset - panel_x, road_offset):
+            screen.blit(rail_scaled, (x, 85))
+            screen.blit(rail_scaled, (x, 305))
     ego = snapshot.get("ego", {})
-    ego_x = road.left + road.width * 0.32
-    ego_y = road.top + (int(ego.get("lane", 1)) + 0.5) * lane_height
-    ego_sprite = _load_vehicle_sprite()
+    # Keep the original Pygame geometry: ego anchor x≈455 and lane bottoms
+    # 200/250/300.  Traffic x is already ego-relative in the environment.
+    ego_x = 455.0
+    ego_y = 200.0 + float(ego.get("y", int(ego.get("lane", 1)) * 50.0))
+    ego_sprite = _load_vehicle_sprite(
+        str(ego.get("vehicle_type") or "跑车"),
+        bool(ego.get("crashed")),
+        ego.get("color") or "银色",
+        int(ego.get("sprite_state", 1)),
+    )
     if ego_sprite is not None:
-        ego_sprite = pygame.transform.smoothscale(ego_sprite, (58, 46))
-        screen.blit(ego_sprite, (ego_x - 29, ego_y - 23))
+        ego_sprite = pygame.transform.smoothscale(ego_sprite, _legacy_sprite_size(None, ego=True))
+        screen.blit(ego_sprite, (ego_x - ego_sprite.get_width() / 2, ego_y - ego_sprite.get_height()))
     else:
         pygame.draw.rect(screen, (45, 151, 255), (ego_x - 25, ego_y - 18, 50, 36), border_radius=8)
     _text(screen, small, "EGO", (ego_x - 17, ego_y + 25), (0, 0, 0))
     scale = 1.35
     for vehicle in snapshot.get("vehicles", []):
-        x = ego_x + (float(vehicle.get("x", 0.0)) * scale)
-        y = road.top + (int(vehicle.get("lane", 1)) + 0.5) * lane_height
-        if road.left + 16 <= x <= road.right - 16:
-            sprite = _load_vehicle_sprite(bool(vehicle.get("crashed")))
+        # Collision participants remain in the snapshot so the legacy vehicle
+        # sprite and explosion overlay can be shown at the impact position.
+        x = ego_x + float(vehicle.get("x", 0.0))
+        logical_y = vehicle.get("y")
+        y = 200.0 + (float(logical_y) if logical_y is not None else int(vehicle.get("lane", 1)) * 50.0)
+        vehicle_type = vehicle.get("vehicle_type")
+        sprite_width, sprite_height = _legacy_sprite_size(vehicle_type)
+        sprite_left = x - sprite_width / 2.0
+        if road.left - sprite_width <= sprite_left <= road.right:
+            sprite = _load_vehicle_sprite(
+                str(vehicle_type or vehicle.get("vehicle_id", "traffic")),
+                bool(vehicle.get("crashed")),
+                vehicle.get("color"),
+                int(vehicle.get("sprite_state", 1)),
+            )
             if sprite is not None:
-                sprite = pygame.transform.smoothscale(sprite, (58, 46))
-                screen.blit(sprite, (x - 29, y - 23))
+                sprite = pygame.transform.smoothscale(sprite, (sprite_width, sprite_height))
+                screen.blit(sprite, (sprite_left, y - sprite.get_height()))
             else:
                 color = (226, 75, 76) if vehicle.get("crashed") else (240, 166, 65)
-                pygame.draw.rect(screen, color, (x - 22, y - 16, 44, 32), border_radius=7)
-            _text(screen, small, str(vehicle.get("mode", "CRUISE")), (x - 28, y + 20), (222, 230, 237))
+                pygame.draw.rect(screen, color, (sprite_left, y - sprite_height, sprite_width, sprite_height), border_radius=7)
+            if vehicle.get("exploding") or vehicle.get("crashed"):
+                explosion = _load_explosion_sprite()
+                if explosion is not None:
+                    screen.blit(explosion, (x - explosion.get_width() / 2, y - sprite_height / 2 - explosion.get_height() / 2))
+    if ego.get("exploding") or ego.get("crashed"):
+        explosion = _load_explosion_sprite()
+        if explosion is not None:
+            screen.blit(explosion, (ego_x - explosion.get_width() / 2, ego_y - _legacy_sprite_size(None, ego=True)[1] / 2 - explosion.get_height() / 2))
+    screen.set_clip(None)
     _metric(screen, body, "动作", ACTION_LABELS.get(snapshot.get("last_action", 4), "UNKNOWN"), (panel_x + 18, 78), color=(255, 255, 255))
     _metric(screen, body, "步数", str(snapshot.get("step", 0)), (panel_x + 18, 108), color=(255, 255, 255))
-    _metric(screen, body, "速度", f"{float(ego.get('speed', 0.0)):.1f} m/s", (panel_x + 18, 138), color=(255, 255, 255))
+    impact_speed = ego.get("impact_speed")
+    speed_text = f"{_kmh(ego.get('speed', 0.0)):.1f} km/h"
+    if impact_speed is not None:
+        speed_text += f"  撞击前 {_kmh(impact_speed):.1f}"
+    _metric(screen, body, "速度", speed_text, (panel_x + 18, 138), color=(255, 255, 255))
     _metric(screen, body, "距离", f"{float(ego.get('distance', 0.0)):.1f}", (panel_x + 18, 168), color=(255, 255, 255))
     _metric(screen, body, "主分", f"{float(snapshot.get('score', 0.0)):.2f}", (panel_x + 18, 198), color=(0, 255, 0))
     _panel_heading(screen, title, body, panel_x + 18, 238, "安全诊断")
@@ -223,7 +341,7 @@ def run(
     *,
     policy_name: str = "hybrid",
     model_path: Path | None = None,
-    scenario: str = "mixed",
+    scenario: str = "random",
     seed: int = 7,
     fps: int = 10,
 ) -> int:
@@ -244,7 +362,10 @@ def run(
     body_font = pygame.font.SysFont("segoeui", 17)
     small_font = pygame.font.SysFont("segoeui", 14)
 
-    env = HighwayEnv()
+    # The interactive viewer is a long-running simulation. Keep the shorter
+    # benchmark horizon for evaluation, but do not end a clean UI episode at
+    # 600 logical frames (about one minute at the default 10 FPS).
+    env = HighwayEnv(EnvironmentConfig(max_steps=3600))
     observation = env.reset(seed=seed, scenario=scenario)
     policy = build_policy(policy_name, model_path)
     active_name = policy_name
@@ -328,11 +449,13 @@ def _draw_scene(
         pygame.draw.line(screen, (220, 223, 227), (34, y + 60), (786, y + 60), 2)
 
     ego_x = 220.0
-    ego_y = 180 + env.ego.lane * 120
+    ego_y = 180 + int((env.ego.y if env.ego.y is not None else env.ego.lane * env.config.lane_width) * 120 / env.config.lane_width)
     pygame.draw.rect(screen, (53, 156, 255), (ego_x - 24, ego_y - 18, 48, 36), border_radius=8)
     pygame.draw.rect(screen, (197, 232, 255), (ego_x + 4, ego_y - 12, 13, 24), border_radius=3)
 
     for vehicle in env.vehicles:
+        if vehicle.crashed:
+            continue
         x, y = world_to_screen(vehicle.x, vehicle.lane, ego_x=ego_x)
         if 45 <= x <= 790:
             color = (235, 91, 74) if vehicle.crashed else (240, 169, 67)
@@ -342,7 +465,7 @@ def _draw_scene(
     _text(screen, small_font, "LIVE SIMULATION", (44, 75), (139, 161, 181))
     _panel_card(pygame, screen, (840, 28, 260, 116), "POLICY", POLICY_LABELS[policy_name], body_font, title_font)
     _panel_card(pygame, screen, (840, 158, 260, 150), "VEHICLE STATE", "", body_font, title_font)
-    _metric(screen, body_font, "Speed", f"{env.ego.speed:.1f} m/s", (858, 204))
+    _metric(screen, body_font, "Speed", f"{_kmh(env.ego.speed):.1f} km/h", (858, 204))
     _metric(screen, body_font, "Lane", str(env.ego.lane + 1), (858, 235))
     _metric(screen, body_font, "Step", str(env.step_count), (858, 266))
     _panel_card(pygame, screen, (840, 322, 260, 154), "EPISODE", "", body_font, title_font)

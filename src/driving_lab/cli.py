@@ -70,8 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--policy", choices=("rule", "mpc", "neural", "hybrid"), default="hybrid")
     ui.add_argument("--model", type=Path, default=Path("experiments/models/neural_model.pkl"))
     ui.add_argument("--seed", type=int, default=7)
-    ui.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="mixed")
-    ui.add_argument("--fps", type=int, default=10)
+    ui.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="random")
+    ui.add_argument("--fps", type=int, default=30)
 
     diagnose = subparsers.add_parser("diagnose", help="run one seeded episode and write JSONL diagnostics")
     diagnose.add_argument("--scenario", choices=HighwayEnv.SCENARIOS, default="random")

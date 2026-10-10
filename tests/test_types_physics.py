@@ -49,3 +49,16 @@ def test_emergency_braking_distance_grows_with_closing_speed():
     fast = emergency_braking_distance(8.0)
     assert slow > 0
     assert fast > slow
+
+
+def test_emergency_braking_distance_accounts_for_moving_lead_speed():
+    # Ego 8 -> lead 4 must shed 4 m/s, but its absolute speed still determines
+    # how much relative distance is spent during the braking manoeuvre.
+    moving_lead = emergency_braking_distance(
+        4.0, current_speed=8.0, target_speed=4.0
+    )
+    stationary_lead = emergency_braking_distance(
+        8.0, current_speed=8.0, target_speed=0.0
+    )
+    assert moving_lead > emergency_braking_distance(4.0)
+    assert stationary_lead > moving_lead
